@@ -1,0 +1,54 @@
+services:
+  attacker:
+    build: ./attacker
+    container_name: unix-lab-attacker
+    networks:
+      lab_net:
+        ipv4_address: 172.28.0.10
+    depends_on:
+      - target
+    command: ["sleep", "infinity"]
+
+  target:
+    build: ./target
+    container_name: unix-lab-target
+    networks:
+      lab_net:
+        ipv4_address: 172.28.0.20
+    ports:
+      - "8080:8080"
+    volumes:
+      - lab_logs:/var/log/unix-cyber-lab
+
+  defender:
+    build: ./defender
+    container_name: unix-lab-defender
+    networks:
+      lab_net:
+        ipv4_address: 172.28.0.30
+    volumes:
+      - lab_logs:/var/log/unix-cyber-lab:ro
+    command: ["sleep", "infinity"]
+
+  dashboard:
+    build: ./dashboard
+    container_name: unix-lab-dashboard
+    networks:
+      lab_net:
+        ipv4_address: 172.28.0.40
+    ports:
+      - "3000:3000"
+    volumes:
+      - lab_logs:/var/log/unix-cyber-lab:ro
+    depends_on:
+      - target
+
+networks:
+  lab_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  lab_logs:

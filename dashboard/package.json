@@ -1,0 +1,10 @@
+{
+  "name": "unix-cyber-lab-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "express": "^4.19.2",
+    "vue": "^3.5.0"
+  }
+}

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Unix Cyber Lab</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app" v-cloak>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">WSL2 / Docker Bridge / UNIX Practice</p>
+          <h1>Unix Cyber Lab</h1>
+        </div>
+        <div class="status-pill" :class="summary.riskLevel === 'High' ? 'danger' : 'normal'">
+          <span></span>
+          {{ summary.riskLevel || 'Loading' }}
+        </div>
+      </header>
+
+      <main class="shell-grid">
+        <section class="panel topology-panel">
+          <div class="panel-head">
+            <h2>Network Topology</h2>
+            <button @click="refreshData" :disabled="loading" title="Refresh data">↻</button>
+          </div>
+          <div class="topology">
+            <article v-for="node in nodes" :key="node.id" class="node" :class="node.id">
+              <span class="node-status"></span>
+              <strong>{{ node.name }}</strong>
+              <small>{{ node.ip }}</small>
+              <p>{{ node.role }}</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel metrics-panel">
+          <div class="panel-head">
+            <h2>Lab Signals</h2>
+          </div>
+          <div class="metrics">
+            <div class="metric">
+              <span>Total Events</span>
+              <strong>{{ summary.total ?? 0 }}</strong>
+            </div>
+            <div class="metric">
+              <span>HTTP Requests</span>
+              <strong>{{ summary.byType?.http_request ?? 0 }}</strong>
+            </div>
+            <div class="metric">
+              <span>Login Attempts</span>
+              <strong>{{ summary.byType?.login_attempt ?? 0 }}</strong>
+            </div>
+            <div class="metric alert">
+              <span>Failed Logins</span>
+              <strong>{{ summary.failedLogins ?? 0 }}</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel alerts-panel">
+          <div class="panel-head">
+            <h2>Defender Findings</h2>
+          </div>
+          <article v-if="summary.alerts?.length" v-for="alert in summary.alerts" :key="alert.title" class="finding">
+            <span>{{ alert.severity }}</span>
+            <h3>{{ alert.title }}</h3>
+            <p>{{ alert.description }}</p>
+            <footer>{{ alert.suggestion }}</footer>
+          </article>
+          <div v-else class="empty-state">No high-risk pattern detected.</div>
+        </section>
+
+        <section class="panel events-panel">
+          <div class="panel-head">
+            <h2>Event Timeline</h2>
+            <small>{{ lastUpdated }}</small>
+          </div>
+          <ol class="timeline">
+            <li v-for="event in events" :key="event.id" :class="event.type">
+              <time>{{ formatTime(event.timestamp) }}</time>
+              <div>
+                <strong>{{ event.type }}</strong>
+                <p>{{ event.detail }}</p>
+                <code>{{ event.source }}</code>
+              </div>
+            </li>
+          </ol>
+          <div v-if="!events.length" class="empty-state">Waiting for target logs.</div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/vendor/vue/vue.global.prod.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>
