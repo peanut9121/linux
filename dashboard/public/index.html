@@ -56,6 +56,18 @@
               <span>Failed Logins</span>
               <strong>{{ summary.failedLogins ?? 0 }}</strong>
             </div>
+            <div class="metric">
+              <span>Vulnerability Access</span>
+              <strong>{{ summary.vulnerabilityAccesses ?? 0 }}</strong>
+            </div>
+            <div class="metric alert">
+              <span>Config Changes</span>
+              <strong>{{ summary.configurationChanges ?? 0 }}</strong>
+            </div>
+            <div class="metric alert">
+              <span>Successful Exploits</span>
+              <strong>{{ summary.successfulExploits ?? 0 }}</strong>
+            </div>
           </div>
         </section>
 
@@ -72,10 +84,85 @@
           <div v-else class="empty-state">No high-risk pattern detected.</div>
         </section>
 
+        <section class="panel vulnerability-panel">
+          <div class="panel-head vulnerability-head">
+            <div>
+              <h2>Controlled Vulnerability Lab</h2>
+              <small>{{ operationMessage || '等待使用者啟動漏洞偵測' }}</small>
+            </div>
+            <button class="scan-button" @click="scanVulnerabilities" :disabled="scanning || attackingId !== ''">
+              {{ scanning ? '偵測中...' : '偵測漏洞' }}
+            </button>
+          </div>
+          <div v-if="vulnerabilities.length" class="vulnerability-grid">
+            <article v-for="vulnerability in vulnerabilities" :key="vulnerability.id" class="vulnerability-card">
+              <header>
+                <code>{{ vulnerability.id }}</code>
+                <span :class="'severity-' + vulnerability.severity">{{ vulnerability.severity }}</span>
+              </header>
+              <h3>{{ vulnerability.name }}</h3>
+              <p>{{ vulnerability.description }}</p>
+              <dl>
+                <dt>偵測證據</dt>
+                <dd>{{ vulnerability.evidence }}</dd>
+                <dt>受控攻擊</dt>
+                <dd>{{ vulnerability.attack }}</dd>
+              </dl>
+              <button
+                class="attack-button"
+                @click="runAttack(vulnerability)"
+                :disabled="attackingId !== '' || scanning"
+              >
+                {{ attackingId === vulnerability.id ? '攻擊執行中...' : '執行受控攻擊' }}
+              </button>
+              <div v-if="attackResults[vulnerability.id]" class="attack-result">
+                <div class="result-heading">
+                  <strong>{{ attackResults[vulnerability.id].success ? '攻擊成功' : '攻擊失敗' }}</strong>
+                  <code>HTTP {{ attackResults[vulnerability.id].status }}</code>
+                </div>
+                <h4>{{ attackResults[vulnerability.id].summary }}</h4>
+                <div class="result-details">
+                  <div>
+                    <span>執行動作</span>
+                    <code>{{ attackResults[vulnerability.id].action }}</code>
+                  </div>
+                  <div>
+                    <span>影響範圍</span>
+                    <p>{{ attackResults[vulnerability.id].target }}</p>
+                  </div>
+                  <div>
+                    <span>造成影響</span>
+                    <p>{{ attackResults[vulnerability.id].impact }}</p>
+                  </div>
+                </div>
+                <div class="state-comparison">
+                  <div>
+                    <span>攻擊前</span>
+                    <p>{{ attackResults[vulnerability.id].before }}</p>
+                  </div>
+                  <div class="state-arrow">→</div>
+                  <div>
+                    <span>攻擊後</span>
+                    <p>{{ attackResults[vulnerability.id].after }}</p>
+                  </div>
+                </div>
+                <span class="proof-label">成功證據 / Target 回應</span>
+                <pre>{{ attackResults[vulnerability.id].result }}</pre>
+              </div>
+            </article>
+          </div>
+          <div v-else class="empty-state">按下「偵測漏洞」，Attacker 將分析 Target 的已知教學漏洞。</div>
+        </section>
+
         <section class="panel events-panel">
           <div class="panel-head">
             <h2>Event Timeline</h2>
-            <small>{{ lastUpdated }}</small>
+            <div class="event-actions">
+              <small>{{ lastUpdated }}</small>
+              <button class="clear-button" @click="clearConfirmOpen = true" :disabled="clearingRecords || !events.length">
+                清除記錄
+              </button>
+            </div>
           </div>
           <ol class="timeline">
             <li v-for="event in events" :key="event.id" :class="event.type">
@@ -90,6 +177,60 @@
           <div v-if="!events.length" class="empty-state">Waiting for target logs.</div>
         </section>
       </main>
+
+      <div v-if="terminalOpen" class="terminal-stage">
+        <div class="terminal-window">
+          <header class="terminal-bar">
+            <div class="terminal-dots" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </div>
+            <strong>bash — {{ terminalTitle }}</strong>
+            <button @click="closeTerminal" :disabled="terminalRunning" title="Close terminal">×</button>
+          </header>
+          <div class="terminal-body">
+            <div class="terminal-context">
+              <span>CONTROLLED LAB</span>
+              <code>attacker@unix-lab:~$</code>
+            </div>
+            <ol>
+              <li v-for="(line, index) in terminalLines" :key="index" :class="'terminal-' + line.type">
+                {{ line.text }}<span v-if="index === terminalLines.length - 1 && terminalRunning" class="cursor"></span>
+              </li>
+            </ol>
+          </div>
+          <footer class="terminal-footer">
+            <span>
+              {{
+                terminalRunning
+                  ? (terminalMode === 'scan' ? '白名單漏洞偵測中，請稍候...' : '白名單攻擊劇本執行中，請稍候...')
+                  : (terminalMode === 'scan' ? '漏洞偵測完成，可關閉終端查看漏洞清單。' : '攻擊演示完成，可關閉終端查看完整報告。')
+              }}
+            </span>
+            <button @click="closeTerminal" :disabled="terminalRunning">
+              {{
+                terminalRunning
+                  ? (terminalMode === 'scan' ? '偵測中' : '執行中')
+                  : (terminalMode === 'scan' ? '查看漏洞清單' : '查看完整報告')
+              }}
+            </button>
+          </footer>
+        </div>
+      </div>
+
+      <div v-if="clearConfirmOpen" class="confirm-stage" @click.self="clearConfirmOpen = false">
+        <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="clear-title">
+          <span class="confirm-label">Event Log Maintenance</span>
+          <h2 id="clear-title">確定要清除所有事件記錄？</h2>
+          <p>這會清空共享的 <code>events.log</code>，並重設事件時間線、統計、告警與目前畫面的攻擊報告。</p>
+          <p class="confirm-note">容器、漏洞設定與專案檔案不會被刪除。</p>
+          <div class="confirm-actions">
+            <button @click="clearConfirmOpen = false" :disabled="clearingRecords">取消</button>
+            <button class="confirm-delete" @click="clearEventRecords" :disabled="clearingRecords">
+              {{ clearingRecords ? '清除中...' : '確認清除記錄' }}
+            </button>
+          </div>
+        </section>
+      </div>
     </div>
 
     <script src="/vendor/vue/vue.global.prod.js"></script>

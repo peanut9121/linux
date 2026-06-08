@@ -7,7 +7,6 @@ services:
         ipv4_address: 172.28.0.10
     depends_on:
       - target
-    command: ["sleep", "infinity"]
 
   target:
     build: ./target
@@ -39,9 +38,10 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - lab_logs:/var/log/unix-cyber-lab:ro
+      - lab_logs:/var/log/unix-cyber-lab
     depends_on:
       - target
+      - attacker
 
 networks:
   lab_net:

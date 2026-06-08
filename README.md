@@ -8,7 +8,7 @@
 
 建立一個可在 WSL2 中啟動的最小虛擬實驗室：
 
-- `attacker`: 執行受控測試腳本，模擬連線與登入失敗事件。
+- `attacker`: 執行受控測試腳本，並提供白名單漏洞偵測與攻擊劇本。
 - `target`: Linux 靶機，提供簡單 Web service 並產生日誌。
 - `defender`: 收集與分析事件，輸出初步告警。
 - `dashboard`: Vue Web Dashboard，呈現拓撲、事件與告警。
@@ -32,6 +32,9 @@ cd /path/to/unix-cyber-lab
 
 # 開啟 Vue Dashboard
 # http://localhost:3000
+
+# 在 Dashboard 中按下「偵測漏洞」
+# 再選擇個別漏洞執行受控攻擊並查看結果
 
 # 停止實驗室
 ./scripts/stop_lab.sh
@@ -73,5 +76,15 @@ cd /path/to/unix-cyber-lab
 
 - 所有模擬都限制在 Docker isolated network。
 - 攻擊端只連線到 `target` 容器，不掃描外部 IP。
+- 漏洞偵測與攻擊只允許執行內建白名單劇本。
 - AI 只分析與解釋 log，不直接執行攻擊指令。
 - 第一階段先做可觀察、可紀錄、可展示的受控事件。
+
+## 受控漏洞情境
+
+| ID | 漏洞 | 可觀察結果 |
+|---|---|---|
+| LAB-001 | 暴露的 Debug 資訊 | 讀取系統資訊與教學旗標 |
+| LAB-002 | 公開備份檔 | 查看模擬備份機密 |
+| LAB-003 | 未驗證管理匯出 | 匯出模擬帳號資料 |
+| LAB-004 | 所有人可寫入的設定檔 | 修改模擬服務模式並觸發完整性告警 |
