@@ -8,6 +8,9 @@ createApp({
       summary: { byType: {}, alerts: [] },
       vulnerabilities: [],
       attackResults: {},
+      auditReport: null,
+      auditing: false,
+      auditMessage: "",
       loading: false,
       scanning: false,
       attackingId: "",
@@ -76,6 +79,51 @@ createApp({
         this.operationMessage = `偵測失敗：${error.message}`;
       } finally {
         this.scanning = false;
+        this.terminalRunning = false;
+      }
+    },
+    async runLinuxAudit() {
+      this.auditing = true;
+      this.auditMessage = "正在收集未知 Linux Target 的真實系統狀態...";
+      this.terminalOpen = true;
+      this.terminalRunning = true;
+      this.terminalMode = "audit";
+      this.terminalTitle = "Generic Linux Security Audit / target";
+      this.terminalLines = [];
+      try {
+        await this.typeTerminalLine("Unix Cyber Lab generic Linux auditor", "system", 18);
+        await this.typeTerminalLine("[network discovery] scanner does not know which ports are open", "system", 9);
+        await this.typeTerminalLine("$ nmap -sV -p 1-9000 target", "command", 18);
+        await this.typeTerminalLine("[authorized system collector] executing read-only UNIX checks", "system", 9);
+        for (const command of [
+          "$ uname -a",
+          "$ id",
+          "$ ps -eo pid,user,comm,args",
+          "$ ss -lntup",
+          "$ find /lab /etc /opt /srv -xdev -type f -perm -0002",
+          "$ find /lab /etc /opt /srv -xdev -type f -perm -4000"
+        ]) {
+          await this.typeTerminalLine(command, "command", 11);
+        }
+        const response = await fetch("/api/audit/linux");
+        const report = await response.json();
+        if (!response.ok) throw new Error(report.error || "audit failed");
+        this.auditReport = report;
+        for (const port of report.network.open_ports) {
+          await this.typeTerminalLine(`[open port] ${port.port}/${port.protocol} ${port.service} ${port.product}`.trim(), "warning", 8);
+        }
+        for (const finding of report.findings) {
+          await this.typeTerminalLine(`[${finding.severity}] ${finding.title}`, finding.severity === "high" ? "error" : "warning", 8);
+          await this.typeTerminalLine(`[evidence] ${finding.evidence}`, "output", 5);
+        }
+        await this.typeTerminalLine(`[complete] Linux security score: ${report.score}/100`, "success", 12);
+        this.auditMessage = `稽核完成：發現 ${report.findings.length} 個需檢視項目，安全分數 ${report.score}/100。`;
+        await this.refreshData();
+      } catch (error) {
+        await this.typeTerminalLine(`[error] ${error.message}`, "error", 14);
+        this.auditMessage = `稽核失敗：${error.message}`;
+      } finally {
+        this.auditing = false;
         this.terminalRunning = false;
       }
     },

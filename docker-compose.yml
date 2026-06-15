@@ -16,6 +16,8 @@ services:
         ipv4_address: 172.28.0.20
     ports:
       - "8080:8080"
+    environment:
+      AUDIT_TOKEN: unix-cyber-lab-readonly-audit
     volumes:
       - lab_logs:/var/log/unix-cyber-lab
 
@@ -37,6 +39,8 @@ services:
         ipv4_address: 172.28.0.40
     ports:
       - "3000:3000"
+    environment:
+      AUDIT_TOKEN: unix-cyber-lab-readonly-audit
     volumes:
       - lab_logs:/var/log/unix-cyber-lab
     depends_on:

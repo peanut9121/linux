@@ -1,4 +1,6 @@
 import json
+import subprocess
+import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
@@ -71,6 +73,44 @@ def scan():
     return findings
 
 
+def network_audit():
+    command = ["nmap", "-sV", "-T4", "-p", "1-9000", "-oX", "-", "target"]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=45, check=False)
+    open_ports = []
+    if result.stdout:
+        root = ET.fromstring(result.stdout)
+        for port in root.findall(".//port"):
+            state = port.find("state")
+            service = port.find("service")
+            if state is not None and state.get("state") == "open":
+                open_ports.append({
+                    "port": int(port.get("portid")),
+                    "protocol": port.get("protocol"),
+                    "service": service.get("name", "unknown") if service is not None else "unknown",
+                    "product": service.get("product", "") if service is not None else "",
+                    "version": service.get("version", "") if service is not None else "",
+                })
+    findings = [
+        {
+            "category": "network_exposure",
+            "severity": "medium",
+            "title": "Open network port discovered",
+            "evidence": f"{item['port']}/{item['protocol']} {item['service']} {item['product']} {item['version']}".strip(),
+            "reason": "遠端主機正在提供可連線服務，應確認這個服務是否必要且已安全設定。",
+            "recommendation": "確認服務版本與用途，移除不必要服務並限制網路存取。",
+        }
+        for item in open_ports
+    ]
+    return {
+        "scanner": "nmap",
+        "target": "target",
+        "command": " ".join(command[:-3] + ["-oX", "-", "target"]),
+        "open_ports": open_ports,
+        "findings": findings,
+        "raw_stderr": result.stderr.strip(),
+    }
+
+
 def attack(vulnerability_id):
     attacks = {
         "LAB-001": "/debug?inspect=full",
@@ -136,6 +176,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/scan":
             self.send_json(200, {"findings": scan()})
+            return
+
+        if self.path == "/audit/network":
+            self.send_json(200, network_audit())
             return
 
         if self.path.startswith("/attack/"):

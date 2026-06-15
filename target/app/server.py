@@ -1,10 +1,84 @@
+import json
+import os
+import subprocess
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 LOG_PATH = Path("/var/log/unix-cyber-lab/events.log")
-CONFIG_PATH = Path("/var/log/unix-cyber-lab/service-mode.txt")
+CONFIG_PATH = Path("/lab/service.conf")
+AUDIT_TOKEN = os.environ.get("AUDIT_TOKEN", "")
+
+
+def run_readonly(command):
+    result = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
+    return {
+        "command": " ".join(command),
+        "exit_code": result.returncode,
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+    }
+
+
+def collect_system_audit():
+    commands = {
+        "kernel": ["uname", "-a"],
+        "identity": ["id"],
+        "processes": ["ps", "-eo", "pid,user,comm,args"],
+        "listening_ports": ["ss", "-lntup"],
+        "world_writable_files": [
+            "find", "/lab", "/etc", "/opt", "/srv",
+            "-xdev", "-type", "f", "-perm", "-0002",
+            "-printf", "%m %u:%g %p\n",
+        ],
+        "suid_files": [
+            "find", "/lab", "/etc", "/opt", "/srv",
+            "-xdev", "-type", "f", "-perm", "-4000",
+            "-printf", "%m %u:%g %p\n",
+        ],
+    }
+    results = {name: run_readonly(command) for name, command in commands.items()}
+    os_release = {}
+    for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            os_release[key] = value.strip('"')
+
+    findings = []
+    writable_lines = [line for line in results["world_writable_files"]["stdout"].splitlines() if line]
+    for line in writable_lines:
+        findings.append({
+            "category": "file_permissions",
+            "severity": "high",
+            "title": "World-writable file discovered",
+            "evidence": line,
+            "reason": "任何本機使用者都能修改這個檔案，可能破壞服務設定或系統完整性。",
+            "recommendation": "確認檔案用途，並使用 chmod/chown 限制為服務擁有者可寫入。",
+        })
+
+    listening_lines = [
+        line for line in results["listening_ports"]["stdout"].splitlines()
+        if line and "LISTEN" in line and "0.0.0.0:" in line and "127.0.0.11:" not in line
+    ]
+    for line in listening_lines:
+        findings.append({
+            "category": "network_exposure",
+            "severity": "medium",
+            "title": "Listening network service discovered",
+            "evidence": line,
+            "reason": "監聽中的服務會增加主機攻擊面，應確認是否為必要服務。",
+            "recommendation": "確認服務用途；若非必要，關閉服務或使用防火牆限制來源。",
+        })
+
+    return {
+        "collector": "authorized-readonly-agent",
+        "hostname": os.uname().nodename,
+        "os": os_release,
+        "commands": results,
+        "findings": findings,
+        "score": max(0, 100 - sum(20 if item["severity"] == "high" else 8 for item in findings)),
+    }
 
 
 def write_event(event_type, source_ip, detail):
@@ -20,6 +94,14 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         source_ip = self.client_address[0]
+
+        if parsed.path == "/audit/system":
+            if not AUDIT_TOKEN or self.headers.get("X-Audit-Token") != AUDIT_TOKEN:
+                self.send_json(403, {"error": "authorized audit token required"})
+                return
+            write_event("security_audit", source_ip, "scope=system,mode=readonly")
+            self.send_json(200, collect_system_audit())
+            return
 
         if parsed.path == "/login":
             user = query.get("user", ["unknown"])[0]
@@ -55,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/files/config":
-            current_mode = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else "normal"
+            current_mode = CONFIG_PATH.read_text(encoding="utf-8").strip() if CONFIG_PATH.exists() else "normal"
             if "mode" not in query:
                 self.send_text(200, f"service_mode={current_mode}\n")
                 return
@@ -73,6 +155,14 @@ class Handler(BaseHTTPRequestHandler):
         payload = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def send_json(self, status, data):
+        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)

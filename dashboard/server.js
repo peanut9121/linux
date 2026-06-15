@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = 3000;
 const logPath = "/var/log/unix-cyber-lab/events.log";
+const auditToken = process.env.AUDIT_TOKEN || "";
 
 const nodes = [
   { id: "attacker", name: "Attacker", ip: "172.28.0.10", role: "Controlled event simulator", status: "online" },
@@ -138,6 +139,27 @@ app.get("/api/vulnerabilities/scan", async (_request, response) => {
     response.status(attackerResponse.status).json(await attackerResponse.json());
   } catch {
     response.status(503).json({ error: "attacker service is unavailable" });
+  }
+});
+
+app.get("/api/audit/linux", async (_request, response) => {
+  try {
+    const [systemResponse, networkResponse] = await Promise.all([
+      fetch("http://target:8080/audit/system", { headers: { "X-Audit-Token": auditToken } }),
+      fetch("http://attacker:8090/audit/network")
+    ]);
+    const [system, network] = await Promise.all([systemResponse.json(), networkResponse.json()]);
+    const findings = [...system.findings, ...network.findings];
+    response.json({
+      generatedAt: new Date().toISOString(),
+      target: "target",
+      system,
+      network,
+      findings,
+      score: Math.max(0, 100 - findings.reduce((score, item) => score + (item.severity === "high" ? 20 : 8), 0))
+    });
+  } catch {
+    response.status(503).json({ error: "linux audit services are unavailable" });
   }
 });
 

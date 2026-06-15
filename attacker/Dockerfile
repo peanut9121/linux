@@ -1,6 +1,6 @@
 FROM python:3.12-alpine
 
-RUN apk add --no-cache bash curl iputils busybox-extras
+RUN apk add --no-cache bash curl iputils busybox-extras nmap nmap-scripts
 
 WORKDIR /lab
 COPY scripts/attack_demo.sh /lab/attack_demo.sh

@@ -88,3 +88,19 @@ cd /path/to/unix-cyber-lab
 | LAB-002 | 公開備份檔 | 查看模擬備份機密 |
 | LAB-003 | 未驗證管理匯出 | 匯出模擬帳號資料 |
 | LAB-004 | 所有人可寫入的設定檔 | 修改模擬服務模式並觸發完整性告警 |
+
+## 通用 Linux 安全稽核
+
+Dashboard 的 `Linux Security Audit` 不使用預設漏洞路徑清單，而是執行真實的唯讀檢查：
+
+```bash
+nmap -sV -p 1-9000 target
+uname -a
+id
+ps -eo pid,user,comm,args
+ss -lntup
+find /lab /etc /opt /srv -xdev -type f -perm -0002
+find /lab /etc /opt /srv -xdev -type f -perm -4000
+```
+
+系統會從指令輸出產生通用安全發現，例如未知開放 Port、所有人可寫入的檔案與 SUID 檔案。Target 的系統 Collector 使用 `X-Audit-Token` 授權，且只允許執行程式內建的唯讀檢查。

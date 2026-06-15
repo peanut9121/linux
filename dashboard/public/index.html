@@ -84,6 +84,72 @@
           <div v-else class="empty-state">No high-risk pattern detected.</div>
         </section>
 
+        <section class="panel audit-panel">
+          <div class="panel-head audit-head">
+            <div>
+              <p class="section-kicker">Unknown Target / Generic Rules</p>
+              <h2>Linux Security Audit</h2>
+              <small>{{ auditMessage || '使用真實 UNIX 指令與 Nmap 分析 Target，不預先知道漏洞位置。' }}</small>
+            </div>
+            <button class="audit-button" @click="runLinuxAudit" :disabled="auditing || terminalRunning">
+              {{ auditing ? '稽核中...' : '執行 Linux 稽核' }}
+            </button>
+          </div>
+          <div v-if="auditReport" class="audit-report">
+            <aside class="audit-score" :class="{ 'score-risk': auditReport.score < 70 }">
+              <span>Security Score</span>
+              <strong>{{ auditReport.score }}</strong>
+              <small>/ 100</small>
+              <p>{{ auditReport.target }} · {{ auditReport.system.os.PRETTY_NAME }}</p>
+            </aside>
+            <div class="audit-content">
+              <section class="audit-summary">
+                <div>
+                  <span>Open Ports</span>
+                  <strong>{{ auditReport.network.open_ports.length }}</strong>
+                </div>
+                <div>
+                  <span>Findings</span>
+                  <strong>{{ auditReport.findings.length }}</strong>
+                </div>
+                <div>
+                  <span>Collector</span>
+                  <strong>Read-only</strong>
+                </div>
+              </section>
+              <section class="audit-evidence">
+                <h3>實際探索結果</h3>
+                <div class="port-list">
+                  <code v-for="port in auditReport.network.open_ports" :key="port.port">
+                    {{ port.port }}/{{ port.protocol }} · {{ port.service }} {{ port.product }}
+                  </code>
+                </div>
+              </section>
+              <section class="audit-findings">
+                <article v-for="(finding, index) in auditReport.findings" :key="index">
+                  <header>
+                    <span :class="'severity-' + finding.severity">{{ finding.severity }}</span>
+                    <code>{{ finding.category }}</code>
+                  </header>
+                  <h3>{{ finding.title }}</h3>
+                  <p>{{ finding.reason }}</p>
+                  <pre>{{ finding.evidence }}</pre>
+                  <footer>{{ finding.recommendation }}</footer>
+                </article>
+              </section>
+              <details class="command-evidence">
+                <summary>查看 Collector 實際執行的 UNIX 指令與輸出</summary>
+                <article v-for="(result, name) in auditReport.system.commands" :key="name">
+                  <strong>{{ name }}</strong>
+                  <code>$ {{ result.command }}</code>
+                  <pre>{{ result.stdout || '(no output)' }}</pre>
+                </article>
+              </details>
+            </div>
+          </div>
+          <div v-else class="empty-state">尚未執行通用 Linux 安全稽核。</div>
+        </section>
+
         <section class="panel vulnerability-panel">
           <div class="panel-head vulnerability-head">
             <div>
@@ -202,15 +268,15 @@
             <span>
               {{
                 terminalRunning
-                  ? (terminalMode === 'scan' ? '白名單漏洞偵測中，請稍候...' : '白名單攻擊劇本執行中，請稍候...')
-                  : (terminalMode === 'scan' ? '漏洞偵測完成，可關閉終端查看漏洞清單。' : '攻擊演示完成，可關閉終端查看完整報告。')
+                  ? (terminalMode === 'audit' ? '正在執行通用 Linux 安全稽核...' : (terminalMode === 'scan' ? '白名單漏洞偵測中，請稍候...' : '白名單攻擊劇本執行中，請稍候...'))
+                  : (terminalMode === 'audit' ? 'Linux 稽核完成，可關閉終端查看安全報告。' : (terminalMode === 'scan' ? '漏洞偵測完成，可關閉終端查看漏洞清單。' : '攻擊演示完成，可關閉終端查看完整報告。'))
               }}
             </span>
             <button @click="closeTerminal" :disabled="terminalRunning">
               {{
                 terminalRunning
-                  ? (terminalMode === 'scan' ? '偵測中' : '執行中')
-                  : (terminalMode === 'scan' ? '查看漏洞清單' : '查看完整報告')
+                  ? (terminalMode === 'audit' ? '稽核中' : (terminalMode === 'scan' ? '偵測中' : '執行中'))
+                  : (terminalMode === 'audit' ? '查看稽核報告' : (terminalMode === 'scan' ? '查看漏洞清單' : '查看完整報告'))
               }}
             </button>
           </footer>
