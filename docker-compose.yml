@@ -3,8 +3,7 @@ services:
     build: ./attacker
     container_name: unix-lab-attacker
     networks:
-      lab_net:
-        ipv4_address: 172.28.0.10
+      - lab_net
     depends_on:
       - target
 
@@ -12,8 +11,7 @@ services:
     build: ./target
     container_name: unix-lab-target
     networks:
-      lab_net:
-        ipv4_address: 172.28.0.20
+      - lab_net
     ports:
       - "8080:8080"
     environment:
@@ -25,8 +23,7 @@ services:
     build: ./defender
     container_name: unix-lab-defender
     networks:
-      lab_net:
-        ipv4_address: 172.28.0.30
+      - lab_net
     volumes:
       - lab_logs:/var/log/unix-cyber-lab:ro
     command: ["sleep", "infinity"]
@@ -35,8 +32,7 @@ services:
     build: ./dashboard
     container_name: unix-lab-dashboard
     networks:
-      lab_net:
-        ipv4_address: 172.28.0.40
+      - lab_net
     ports:
       - "3000:3000"
     environment:

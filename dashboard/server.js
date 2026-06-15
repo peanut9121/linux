@@ -1,5 +1,6 @@
 import express from "express";
 import { readFile, writeFile } from "node:fs/promises";
+import { lookup } from "node:dns/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,12 +11,30 @@ const port = 3000;
 const logPath = "/var/log/unix-cyber-lab/events.log";
 const auditToken = process.env.AUDIT_TOKEN || "";
 
-const nodes = [
-  { id: "attacker", name: "Attacker", ip: "172.28.0.10", role: "Controlled event simulator", status: "online" },
-  { id: "target", name: "Target", ip: "172.28.0.20", role: "Linux service and log source", status: "online" },
-  { id: "defender", name: "Defender", ip: "172.28.0.30", role: "Rule-based log analyzer", status: "online" },
-  { id: "dashboard", name: "Dashboard", ip: "172.28.0.40", role: "Vue transparency layer", status: "online" }
+const nodeDefinitions = [
+  { id: "attacker", name: "Attacker", fallbackIp: "172.28.0.10", role: "Controlled event simulator" },
+  { id: "target", name: "Target", fallbackIp: "172.28.0.20", role: "Linux service and log source" },
+  { id: "defender", name: "Defender", fallbackIp: "172.28.0.30", role: "Rule-based log analyzer" },
+  { id: "dashboard", name: "Dashboard", fallbackIp: "172.28.0.40", role: "Vue transparency layer" }
 ];
+
+const remediationByLab = {
+  "LAB-001": "停用正式環境的除錯端點，或限制只有管理網段與已驗證使用者可存取。",
+  "LAB-002": "將備份檔移出網站公開目錄，並限制檔案擁有者與權限。",
+  "LAB-003": "為管理匯出功能加入身分驗證與授權檢查。",
+  "LAB-004": "使用 chmod 640 與 chown 限制設定檔，只允許服務擁有者修改。"
+};
+
+async function resolveNodes() {
+  return Promise.all(nodeDefinitions.map(async (node) => {
+    try {
+      const result = await lookup(node.id, { family: 4 });
+      return { ...node, ip: result.address, ipSource: "dynamic", status: "online" };
+    } catch {
+      return { ...node, ip: node.fallbackIp, ipSource: "fallback", status: "unresolved" };
+    }
+  }));
+}
 
 function parseEvent(line, index) {
   const [timestamp, ...parts] = line.trim().split(" ");
@@ -112,8 +131,8 @@ async function readEvents() {
 app.use("/vendor/vue", express.static(path.join(__dirname, "node_modules/vue/dist")));
 app.use(express.static(path.join(__dirname, "public")));
 
-app.get("/api/nodes", (_request, response) => {
-  response.json(nodes);
+app.get("/api/nodes", async (_request, response) => {
+  response.json(await resolveNodes());
 });
 
 app.get("/api/events", async (_request, response) => {
@@ -144,15 +163,64 @@ app.get("/api/vulnerabilities/scan", async (_request, response) => {
 
 app.get("/api/audit/linux", async (_request, response) => {
   try {
-    const [systemResponse, networkResponse] = await Promise.all([
-      fetch("http://target:8080/audit/system", { headers: { "X-Audit-Token": auditToken } }),
-      fetch("http://attacker:8090/audit/network")
+    const requestedTarget = String(_request.query.target || "target").trim();
+    const targetQuery = encodeURIComponent(requestedTarget);
+    const [networkResponse, probeResponse] = await Promise.all([
+      fetch(`http://attacker:8090/audit/network?target=${targetQuery}`),
+      fetch(`http://attacker:8090/scan?target=${targetQuery}`)
     ]);
-    const [system, network] = await Promise.all([systemResponse.json(), networkResponse.json()]);
-    const findings = [...system.findings, ...network.findings];
+    const [network, probe] = await Promise.all([networkResponse.json(), probeResponse.json()]);
+    if (!networkResponse.ok || !probeResponse.ok) {
+      response.status(400).json({ error: network.error || probe.error || "target scan failed" });
+      return;
+    }
+    const nodes = await resolveNodes();
+    const targetNode = nodes.find((node) => node.id === "target");
+    const isLabTarget = requestedTarget === "target" || network.target_ip === targetNode?.ip;
+    const systemResponse = isLabTarget
+      ? await fetch("http://target:8080/audit/system", { headers: { "X-Audit-Token": auditToken } })
+      : null;
+    const system = systemResponse?.ok
+      ? await systemResponse.json()
+      : { collector: "unavailable", os: { PRETTY_NAME: "Remote private host" }, commands: {}, findings: [] };
+    const systemFindings = system.findings.map((finding, index) => {
+      const portMatch = finding.evidence.match(/0\.0\.0\.0:(\d+)/);
+      return {
+        ...finding,
+        id: `SYS-${String(index + 1).padStart(3, "0")}`,
+        source: "unix_collector",
+        location: finding.category === "file_permissions"
+          ? finding.evidence.split(" ").at(-1)
+          : `${targetNode?.ip || "target"}:${portMatch?.[1] || "unknown"}`
+      };
+    });
+    const networkFindings = network.findings.map((finding, index) => ({
+      ...finding,
+      id: `NET-${String(index + 1).padStart(3, "0")}`,
+      source: "nmap",
+      location: `${network.target_ip}:${network.open_ports[index]?.port || "unknown"}`
+    }));
+    const probedFindings = probe.findings.map((finding) => ({
+      id: finding.id,
+      labId: finding.id,
+      category: "application_vulnerability",
+      severity: finding.severity,
+      title: finding.name,
+      evidence: finding.evidence,
+      reason: finding.description,
+      recommendation: remediationByLab[finding.id],
+      source: "active_http_probe",
+      location: `http://${network.target_ip}:8080${finding.path}`,
+      path: finding.path,
+      attack: finding.attack,
+      actionable: isLabTarget
+    }));
+    const findings = [...systemFindings, ...networkFindings, ...probedFindings];
     response.json({
       generatedAt: new Date().toISOString(),
-      target: "target",
+      target: requestedTarget,
+      targetIp: network.target_ip,
+      isLabTarget,
       system,
       network,
       findings,
@@ -165,7 +233,8 @@ app.get("/api/audit/linux", async (_request, response) => {
 
 app.post("/api/vulnerabilities/:id/attack", async (request, response) => {
   try {
-    const attackerResponse = await fetch(`http://attacker:8090/attack/${encodeURIComponent(request.params.id)}`);
+    const target = encodeURIComponent(String(request.query.target || "target"));
+    const attackerResponse = await fetch(`http://attacker:8090/attack/${encodeURIComponent(request.params.id)}?target=${target}`);
     response.status(attackerResponse.status).json(await attackerResponse.json());
   } catch {
     response.status(503).json({ error: "attacker service is unavailable" });

@@ -1,11 +1,14 @@
 import json
+import ipaddress
+import socket
 import subprocess
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
-TARGET = "http://target:8080"
+DEFAULT_TARGET = "target"
 
 VULNERABILITIES = [
     {
@@ -47,9 +50,23 @@ VULNERABILITIES = [
 ]
 
 
-def request_target(path):
+def resolve_allowed_target(value):
+    target = value.strip().lower()
+    if target == "target":
+        return target, socket.gethostbyname(target)
     try:
-        with urlopen(f"{TARGET}{path}", timeout=4) as response:
+        address = socket.gethostbyname(target)
+        ip = ipaddress.ip_address(address)
+    except (socket.gaierror, ValueError):
+        raise ValueError("target must be a resolvable private host or IP")
+    if not (ip.is_private or ip.is_loopback or ip.is_link_local):
+        raise ValueError("public internet targets are not allowed")
+    return target, address
+
+
+def request_target(target, path):
+    try:
+        with urlopen(f"http://{target}:8080{path}", timeout=4) as response:
             return response.status, response.read().decode("utf-8")
     except HTTPError as error:
         return error.code, error.read().decode("utf-8")
@@ -57,24 +74,25 @@ def request_target(path):
         return 0, str(error.reason)
 
 
-def scan():
+def scan(target):
     findings = []
     for vulnerability in VULNERABILITIES:
-        status, body = request_target(vulnerability["path"])
+        status, body = request_target(target, vulnerability["path"])
         if status == 200 and vulnerability["evidence"] in body:
             findings.append(
                 {
                     key: value
                     for key, value in vulnerability.items()
-                    if key not in {"path", "evidence"}
+                    if key != "evidence"
                 }
                 | {"evidence": body.strip()}
             )
     return findings
 
 
-def network_audit():
-    command = ["nmap", "-sV", "-T4", "-p", "1-9000", "-oX", "-", "target"]
+def network_audit(target):
+    _, target_ip = resolve_allowed_target(target)
+    command = ["nmap", "-sV", "-T4", "-p", "1-9000", "-oX", "-", target]
     result = subprocess.run(command, capture_output=True, text=True, timeout=45, check=False)
     open_ports = []
     if result.stdout:
@@ -103,15 +121,16 @@ def network_audit():
     ]
     return {
         "scanner": "nmap",
-        "target": "target",
-        "command": " ".join(command[:-3] + ["-oX", "-", "target"]),
+        "target": target,
+        "target_ip": target_ip,
+        "command": " ".join(command),
         "open_ports": open_ports,
         "findings": findings,
         "raw_stderr": result.stderr.strip(),
     }
 
 
-def attack(vulnerability_id):
+def attack(target, vulnerability_id):
     attacks = {
         "LAB-001": "/debug?inspect=full",
         "LAB-002": "/backup/config.bak?download=true",
@@ -149,7 +168,7 @@ def attack(vulnerability_id):
         return None
 
     if vulnerability_id == "LAB-004":
-        _, before_body = request_target("/files/config")
+        _, before_body = request_target(target, "/files/config")
         before_mode = before_body.strip().removeprefix("service_mode=")
         after_mode = "diagnostic" if before_mode == "maintenance" else "maintenance"
         path = f"/files/config?mode={after_mode}"
@@ -158,7 +177,7 @@ def attack(vulnerability_id):
     else:
         path = attacks[vulnerability_id]
 
-    status, body = request_target(path)
+    status, body = request_target(target, path)
     vulnerability = next(item for item in VULNERABILITIES if item["id"] == vulnerability_id)
     return {
         "id": vulnerability_id,
@@ -174,16 +193,28 @@ def attack(vulnerability_id):
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/scan":
-            self.send_json(200, {"findings": scan()})
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        target = query.get("target", [DEFAULT_TARGET])[0]
+        try:
+            target, target_ip = resolve_allowed_target(target)
+        except ValueError as error:
+            self.send_json(400, {"error": str(error)})
             return
 
-        if self.path == "/audit/network":
-            self.send_json(200, network_audit())
+        if parsed.path == "/scan":
+            self.send_json(200, {"target": target, "target_ip": target_ip, "findings": scan(target)})
             return
 
-        if self.path.startswith("/attack/"):
-            result = attack(self.path.removeprefix("/attack/"))
+        if parsed.path == "/audit/network":
+            self.send_json(200, network_audit(target))
+            return
+
+        if parsed.path.startswith("/attack/"):
+            if target != DEFAULT_TARGET and target_ip != socket.gethostbyname(DEFAULT_TARGET):
+                self.send_json(403, {"error": "controlled attacks are limited to the lab target"})
+                return
+            result = attack(target, parsed.path.removeprefix("/attack/"))
             if result is None:
                 self.send_json(404, {"error": "attack script is not allow-listed"})
                 return
