@@ -1,14 +1,82 @@
 import json
 import ipaddress
+import re
 import socket
+import ssl
 import subprocess
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlsplit, urlparse
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener, urlopen
 
 DEFAULT_TARGET = "target"
+DEFAULT_SCAN_PORTS = "1-9000,25565"
+MAX_TARGET_LENGTH = 512
+MAX_RESPONSE_BYTES = 256 * 1024
+
+ALLOWED_NETWORKS = tuple(
+    ipaddress.ip_network(cidr)
+    for cidr in (
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    )
+)
+
+HTTP_SERVICE_NAMES = {
+    "http",
+    "http-alt",
+    "http-proxy",
+    "https",
+    "https-alt",
+    "ssl/http",
+    "sun-answerbook",
+}
+
+NON_HTTP_SERVICE_NAMES = {
+    "domain",
+    "ftp",
+    "imap",
+    "minecraft",
+    "ms-wbt-server",
+    "mysql",
+    "netbios-ssn",
+    "pop3",
+    "postgresql",
+    "redis",
+    "rtsp",
+    "smtp",
+    "ssh",
+    "telnet",
+}
+
+SECURITY_HEADERS = {
+    "content-security-policy": (
+        "medium",
+        "Content Security Policy is missing",
+        "回應未設定 Content-Security-Policy，瀏覽器缺少限制腳本與資源來源的政策。",
+        "為正式服務設定符合實際資源需求的 Content-Security-Policy。",
+    ),
+    "x-content-type-options": (
+        "low",
+        "MIME sniffing protection is missing",
+        "回應未設定 X-Content-Type-Options: nosniff。",
+        "加入 X-Content-Type-Options: nosniff。",
+    ),
+    "referrer-policy": (
+        "low",
+        "Referrer Policy is missing",
+        "回應未設定 Referrer-Policy，導向其他網站時可能送出過多來源資訊。",
+        "設定適合服務需求的 Referrer-Policy，例如 strict-origin-when-cross-origin。",
+    ),
+}
 
 VULNERABILITIES = [
     {
@@ -88,18 +156,109 @@ VULNERABILITIES = [
 ]
 
 
-def resolve_allowed_target(value):
-    target = value.strip().lower()
-    if target == "target":
-        return target, socket.gethostbyname(target)
+def is_allowed_address(address):
+    ip = ipaddress.ip_address(address)
+    return any(ip in network for network in ALLOWED_NETWORKS)
+
+
+def resolve_private_addresses(host):
     try:
-        address = socket.gethostbyname(target)
-        ip = ipaddress.ip_address(address)
-    except (socket.gaierror, ValueError):
-        raise ValueError("target must be a resolvable private host or IP")
-    if not (ip.is_private or ip.is_loopback or ip.is_link_local):
+        records = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as error:
+        raise ValueError("target must be a resolvable private host or IP") from error
+
+    addresses = sorted({record[4][0].split("%", 1)[0] for record in records})
+    if not addresses or any(not is_allowed_address(address) for address in addresses):
         raise ValueError("public internet targets are not allowed")
-    return target, address
+    return addresses
+
+
+def format_url_host(host):
+    try:
+        return f"[{host}]" if ipaddress.ip_address(host).version == 6 else host
+    except ValueError:
+        return host
+
+
+def parse_target(value):
+    raw = value.strip()
+    if not raw or len(raw) > MAX_TARGET_LENGTH:
+        raise ValueError("target is required and must be at most 512 characters")
+
+    if raw.lower() == DEFAULT_TARGET:
+        addresses = resolve_private_addresses(DEFAULT_TARGET)
+        return {
+            "input": raw,
+            "host": DEFAULT_TARGET,
+            "addresses": addresses,
+            "target_ip": addresses[0],
+            "scheme": "http",
+            "port": 8080,
+            "port_explicit": True,
+            "path": "/",
+            "base_url": "http://target:8080",
+            "requested_url": "http://target:8080/",
+            "is_lab": True,
+        }
+
+    candidate = raw if "://" in raw else f"http://{raw}"
+    try:
+        parsed = urlsplit(candidate)
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("target contains an invalid port") from error
+
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError("only http and https targets are allowed")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("credentials must not be included in the target URL")
+    if not parsed.hostname:
+        raise ValueError("target must include a host or IP")
+    if parsed.fragment:
+        raise ValueError("URL fragments are not supported")
+
+    host = parsed.hostname.lower().rstrip(".")
+    addresses = resolve_private_addresses(host)
+    explicit_port = port is not None
+    port = port or (443 if scheme == "https" else 80)
+    path = parsed.path or "/"
+    url_host = format_url_host(host)
+    default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    authority = url_host if default_port else f"{url_host}:{port}"
+    base_url = f"{scheme}://{authority}"
+    requested_url = f"{base_url}{path}"
+    if parsed.query:
+        requested_url = f"{requested_url}?{parsed.query}"
+
+    return {
+        "input": raw,
+        "host": host,
+        "addresses": addresses,
+        "target_ip": addresses[0],
+        "scheme": scheme,
+        "port": port,
+        "port_explicit": explicit_port,
+        "path": path,
+        "base_url": base_url,
+        "requested_url": requested_url,
+        "is_lab": False,
+    }
+
+
+class NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+        return None
+
+
+def build_audit_opener():
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return build_opener(NoRedirectHandler(), HTTPSHandler(context=context))
+
+
+AUDIT_OPENER = build_audit_opener()
 
 
 def request_target(target, path):
@@ -112,7 +271,7 @@ def request_target(target, path):
         return 0, str(error.reason)
 
 
-def scan(target):
+def scan_lab(target):
     findings = []
     for vulnerability in VULNERABILITIES:
         status, body = request_target(target, vulnerability["path"])
@@ -128,9 +287,165 @@ def scan(target):
     return findings
 
 
+def read_limited(response):
+    return response.read(MAX_RESPONSE_BYTES).decode("utf-8", errors="replace")
+
+
+def response_title(body):
+    match = re.search(r"<title[^>]*>(.*?)</title>", body, flags=re.IGNORECASE | re.DOTALL)
+    return re.sub(r"\s+", " ", match.group(1)).strip()[:160] if match else ""
+
+
+def probe_url(url):
+    request = Request(url, headers={"User-Agent": "Unix-Cyber-Lab/1.0", "Accept": "text/html,*/*;q=0.8"})
+    try:
+        with AUDIT_OPENER.open(request, timeout=6) as response:
+            status = response.status
+            headers = response.headers
+            body = read_limited(response)
+    except HTTPError as error:
+        status = error.code
+        headers = error.headers
+        body = read_limited(error)
+    except (URLError, TimeoutError, ssl.SSLError, OSError):
+        return None
+
+    content_type = headers.get("Content-Type", "")
+    if "text/html" not in content_type.lower() and not body.lstrip().lower().startswith(("<!doctype html", "<html")):
+        return {
+            "url": url,
+            "status": status,
+            "title": "",
+            "content_type": content_type,
+            "headers": dict(headers.items()),
+            "cookies": headers.get_all("Set-Cookie", []),
+        }
+
+    return {
+        "url": url,
+        "status": status,
+        "title": response_title(body),
+        "content_type": content_type,
+        "headers": dict(headers.items()),
+        "cookies": headers.get_all("Set-Cookie", []),
+    }
+
+
+def candidate_urls(target, open_ports):
+    urls = [target["requested_url"]]
+    if not target["port_explicit"]:
+        urls = []
+        for item in open_ports:
+            service = item["service"].lower()
+            port = item["port"]
+            if service in NON_HTTP_SERVICE_NAMES:
+                continue
+            host = format_url_host(target["host"])
+            if service in HTTP_SERVICE_NAMES or any(token in service for token in ("http", "ssl")):
+                schemes = ["https"] if "https" in service or "ssl" in service or port in {443, 8443} else ["http"]
+            else:
+                schemes = ["https", "http"] if port in {443, 8443} else ["http", "https"]
+            for scheme in schemes:
+                default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+                urls.append(f"{scheme}://{host}{'' if default_port else f':{port}'}/")
+    return list(dict.fromkeys(urls))
+
+
+def finding(identifier, severity, title, evidence, reason, recommendation, location):
+    return {
+        "id": identifier,
+        "category": "web_security",
+        "severity": severity,
+        "title": title,
+        "evidence": evidence,
+        "reason": reason,
+        "recommendation": recommendation,
+        "source": "passive_http_probe",
+        "location": location,
+        "actionable": False,
+    }
+
+
+def audit_web_service(service, start_index):
+    findings = []
+    headers = {key.lower(): value for key, value in service["headers"].items()}
+    index = start_index
+
+    for header, (severity, title, reason, recommendation) in SECURITY_HEADERS.items():
+        if header not in headers:
+            findings.append(finding(
+                f"WEB-{index:03d}", severity, title, f"Missing header: {header}", reason,
+                recommendation, service["url"],
+            ))
+            index += 1
+
+    csp = headers.get("content-security-policy", "")
+    if "x-frame-options" not in headers and "frame-ancestors" not in csp.lower():
+        findings.append(finding(
+            f"WEB-{index:03d}", "medium", "Clickjacking protection is missing",
+            "Missing X-Frame-Options and CSP frame-ancestors",
+            "頁面可能被嵌入其他網站的 iframe，增加 clickjacking 風險。",
+            "設定 CSP frame-ancestors 或 X-Frame-Options。", service["url"],
+        ))
+        index += 1
+
+    server = headers.get("server")
+    if server:
+        findings.append(finding(
+            f"WEB-{index:03d}", "low", "Server software is disclosed",
+            f"Server: {server[:160]}", "回應公開伺服器識別資訊，可能協助版本指紋辨識。",
+            "移除或最小化 Server header 的版本資訊。", service["url"],
+        ))
+        index += 1
+
+    cors = headers.get("access-control-allow-origin")
+    if cors == "*":
+        findings.append(finding(
+            f"WEB-{index:03d}", "medium", "CORS allows every origin", "Access-Control-Allow-Origin: *",
+            "任何來源都可讀取允許跨來源存取的回應；對含敏感資料的 API 可能過度寬鬆。",
+            "改用明確可信任來源 allowlist，並逐 endpoint 評估是否需要 CORS。", service["url"],
+        ))
+        index += 1
+
+    for cookie in service["cookies"]:
+        lower_cookie = cookie.lower()
+        missing = []
+        if "httponly" not in lower_cookie:
+            missing.append("HttpOnly")
+        if "samesite=" not in lower_cookie:
+            missing.append("SameSite")
+        if service["url"].startswith("https://") and "secure" not in lower_cookie:
+            missing.append("Secure")
+        if missing:
+            cookie_name = cookie.split("=", 1)[0][:80]
+            findings.append(finding(
+                f"WEB-{index:03d}", "medium", "Cookie security attributes are incomplete",
+                f"Cookie {cookie_name} missing: {', '.join(missing)}",
+                "缺少安全屬性的 Cookie 可能增加跨站請求或前端腳本竊取風險。",
+                "依部署協定加入 HttpOnly、SameSite，HTTPS Cookie 另加入 Secure。", service["url"],
+            ))
+            index += 1
+
+    return findings, index
+
+
+def scan_web(target, open_ports):
+    services = []
+    findings = []
+    next_index = 1
+    for url in candidate_urls(target, open_ports):
+        service = probe_url(url)
+        if not service:
+            continue
+        services.append(service)
+        service_findings, next_index = audit_web_service(service, next_index)
+        findings.extend(service_findings)
+    return {"mode": "real", "services": services, "findings": findings}
+
+
 def network_audit(target):
-    _, target_ip = resolve_allowed_target(target)
-    command = ["nmap", "-sV", "-T4", "-p", "1-9000,25565", "-oX", "-", target]
+    port_range = str(target["port"]) if target["port_explicit"] else DEFAULT_SCAN_PORTS
+    command = ["nmap", "-Pn", "-sV", "-T4", "-p", port_range, "-oX", "-", target["host"]]
     result = subprocess.run(command, capture_output=True, text=True, timeout=45, check=False)
     open_ports = []
     if result.stdout:
@@ -159,13 +474,23 @@ def network_audit(target):
     ]
     return {
         "scanner": "nmap",
-        "target": target,
-        "target_ip": target_ip,
+        "target": target["host"],
+        "target_ip": target["target_ip"],
         "command": " ".join(command),
         "open_ports": open_ports,
         "findings": findings,
         "raw_stderr": result.stderr.strip(),
     }
+
+
+def full_audit(value):
+    target = parse_target(value)
+    network = network_audit(target)
+    if target["is_lab"]:
+        probe = {"mode": "lab", "services": [], "findings": scan_lab(DEFAULT_TARGET)}
+    else:
+        probe = scan_web(target, network["open_ports"])
+    return {"target": target, "network": network, "probe": probe}
 
 
 def attack(target, vulnerability_id):
@@ -234,27 +559,37 @@ def attack(target, vulnerability_id):
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
-        query = parse_qs(parsed.query)
+        query = parse_qs(parsed.query, max_num_fields=8)
         target = query.get("target", [DEFAULT_TARGET])[0]
         try:
-            target, target_ip = resolve_allowed_target(target)
+            target_spec = parse_target(target)
         except ValueError as error:
             self.send_json(400, {"error": str(error)})
             return
 
         if parsed.path == "/scan":
-            self.send_json(200, {"target": target, "target_ip": target_ip, "findings": scan(target)})
+            if target_spec["is_lab"]:
+                self.send_json(200, {"target": target_spec, "mode": "lab", "findings": scan_lab(DEFAULT_TARGET)})
+            else:
+                self.send_json(400, {"error": "real targets must use the integrated audit endpoint"})
             return
 
         if parsed.path == "/audit/network":
-            self.send_json(200, network_audit(target))
+            self.send_json(200, network_audit(target_spec))
+            return
+
+        if parsed.path == "/audit/full":
+            try:
+                self.send_json(200, full_audit(target))
+            except (subprocess.TimeoutExpired, ET.ParseError) as error:
+                self.send_json(504, {"error": f"scan failed: {error}"})
             return
 
         if parsed.path.startswith("/attack/"):
-            if target != DEFAULT_TARGET and target_ip != socket.gethostbyname(DEFAULT_TARGET):
+            if not target_spec["is_lab"]:
                 self.send_json(403, {"error": "controlled attacks are limited to the lab target"})
                 return
-            result = attack(target, parsed.path.removeprefix("/attack/"))
+            result = attack(DEFAULT_TARGET, parsed.path.removeprefix("/attack/"))
             if result is None:
                 self.send_json(404, {"error": "attack script is not allow-listed"})
                 return

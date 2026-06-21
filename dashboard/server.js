@@ -10,6 +10,7 @@ const app = express();
 const port = 3000;
 const logPath = "/var/log/unix-cyber-lab/events.log";
 const auditToken = process.env.AUDIT_TOKEN || "";
+const maxTargetLength = 512;
 
 const nodeDefinitions = [
   { id: "attacker", name: "Attacker", fallbackIp: "172.28.0.10", role: "Controlled event simulator" },
@@ -135,6 +136,17 @@ async function readEvents() {
   }
 }
 
+function readTarget(value) {
+  if (Array.isArray(value) || (typeof value === "object" && value !== null)) {
+    throw new TypeError("target must be a single URL, host, or IP");
+  }
+  const target = String(value || "target").trim();
+  if (!target || target.length > maxTargetLength) {
+    throw new TypeError("target is required and must be at most 512 characters");
+  }
+  return target;
+}
+
 app.use("/vendor/vue", express.static(path.join(__dirname, "node_modules/vue/dist")));
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -170,20 +182,18 @@ app.get("/api/vulnerabilities/scan", async (_request, response) => {
 
 app.get("/api/audit/linux", async (_request, response) => {
   try {
-    const requestedTarget = String(_request.query.target || "target").trim();
+    const requestedTarget = readTarget(_request.query.target);
     const targetQuery = encodeURIComponent(requestedTarget);
-    const [networkResponse, probeResponse] = await Promise.all([
-      fetch(`http://attacker:8090/audit/network?target=${targetQuery}`),
-      fetch(`http://attacker:8090/scan?target=${targetQuery}`)
-    ]);
-    const [network, probe] = await Promise.all([networkResponse.json(), probeResponse.json()]);
-    if (!networkResponse.ok || !probeResponse.ok) {
-      response.status(400).json({ error: network.error || probe.error || "target scan failed" });
+    const auditResponse = await fetch(`http://attacker:8090/audit/full?target=${targetQuery}`);
+    const audit = await auditResponse.json();
+    if (!auditResponse.ok) {
+      response.status(auditResponse.status).json({ error: audit.error || "target scan failed" });
       return;
     }
+    const { target, network, probe } = audit;
     const nodes = await resolveNodes();
     const targetNode = nodes.find((node) => node.id === "target");
-    const isLabTarget = requestedTarget === "target" || network.target_ip === targetNode?.ip;
+    const isLabTarget = target.is_lab === true;
     const systemResponse = isLabTarget
       ? await fetch("http://target:8080/audit/system", { headers: { "X-Audit-Token": auditToken } })
       : null;
@@ -207,45 +217,51 @@ app.get("/api/audit/linux", async (_request, response) => {
       source: "nmap",
       location: `${network.target_ip}:${network.open_ports[index]?.port || "unknown"}`
     }));
-    const probedFindings = probe.findings.map((finding) => ({
-      id: finding.id,
-      labId: finding.id,
-      category: "application_vulnerability",
-      severity: finding.severity,
-      title: finding.name,
-      evidence: finding.evidence,
-      reason: finding.description,
-      recommendation: remediationByLab[finding.id],
-      source: "active_http_probe",
-      location: `http://${network.target_ip}:8080${finding.path}`,
-      path: finding.path,
-      attack: finding.attack,
-      exposed: finding.exposed || [],
-      attackerValue: finding.attacker_value || "",
-      attackerPhase: attackerPhaseByLab[finding.id],
-      actionable: isLabTarget
-    }));
+    const probedFindings = probe.mode === "lab"
+      ? probe.findings.map((finding) => ({
+          id: finding.id,
+          labId: finding.id,
+          category: "application_vulnerability",
+          severity: finding.severity,
+          title: finding.name,
+          evidence: finding.evidence,
+          reason: finding.description,
+          recommendation: remediationByLab[finding.id],
+          source: "active_http_probe",
+          location: `${target.base_url}${finding.path}`,
+          path: finding.path,
+          attack: finding.attack,
+          exposed: finding.exposed || [],
+          attackerValue: finding.attacker_value || "",
+          attackerPhase: attackerPhaseByLab[finding.id],
+          actionable: true
+        }))
+      : probe.findings;
     const findings = [...networkFindings, ...probedFindings];
     const defenderFindings = systemFindings;
     response.json({
       generatedAt: new Date().toISOString(),
       target: requestedTarget,
+      normalizedTarget: target,
+      targetUrl: target.requested_url,
       targetIp: network.target_ip,
       isLabTarget,
       system,
       network,
+      webServices: probe.services || [],
       findings,
       defenderFindings,
       score: Math.max(0, 100 - [...findings, ...defenderFindings].reduce((score, item) => score + (item.severity === "high" ? 20 : 8), 0))
     });
-  } catch {
-    response.status(503).json({ error: "linux audit services are unavailable" });
+  } catch (error) {
+    const status = error instanceof TypeError ? 400 : 503;
+    response.status(status).json({ error: status === 400 ? error.message : "linux audit services are unavailable" });
   }
 });
 
 app.post("/api/vulnerabilities/:id/attack", async (request, response) => {
   try {
-    const target = encodeURIComponent(String(request.query.target || "target"));
+    const target = encodeURIComponent(readTarget(request.query.target));
     const attackerResponse = await fetch(`http://attacker:8090/attack/${encodeURIComponent(request.params.id)}?target=${target}`);
     response.status(attackerResponse.status).json(await attackerResponse.json());
   } catch {

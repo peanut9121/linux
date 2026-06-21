@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Unix Cyber Lab</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -33,7 +34,7 @@
       <div class="workspace">
         <header class="workspace-head">
           <div>
-            <p class="eyebrow">WSL2 / Docker / Authorized Lab</p>
+            <p class="eyebrow">Docker / Private Network / Authorized Audit</p>
             <h1>{{ activeView === 'logs' ? '事件日誌' : activeView === 'network' ? '網路節點' : '攻擊面分析工作台' }}</h1>
           </div>
           <div class="head-actions">
@@ -47,18 +48,18 @@
             <div>
               <span class="section-index">01 / TARGET</span>
               <h2>選擇分析目標</h2>
-              <p>從外部黑箱攻擊者視角分析目標：只使用網路掃描與 HTTP 探測，不預先取得系統內部權限。</p>
+              <p>輸入已授權的私人 IP、主機名稱或完整 HTTP/HTTPS URL。真實服務只執行網路探索與被動 HTTP 安全檢查。</p>
             </div>
             <form class="target-form" @submit.prevent="runLinuxAudit">
               <label for="target-address">目標主機</label>
               <div class="target-input-row">
-                <span>HOST</span>
-                <input id="target-address" v-model.trim="targetInput" placeholder="target 或 172.28.0.2" autocomplete="off" />
+                <span>URL</span>
+                <input id="target-address" v-model.trim="targetInput" placeholder="target 或 http://192.168.1.20:3000" autocomplete="off" />
                 <button type="submit" :disabled="auditing || terminalRunning">
                   {{ auditing ? '分析中...' : '開始分析' }}
                 </button>
               </div>
-              <small>{{ auditMessage || 'Lab 預設目標：target' }}</small>
+              <small>{{ auditMessage || '支援 RFC1918、localhost、.local 與已授權 Tailscale 位址；公開 IP 會被拒絕。' }}</small>
             </form>
           </section>
 
@@ -66,7 +67,7 @@
             <article><span>Security Score</span><strong :class="{ danger: auditReport?.score < 70 }">{{ auditReport?.score ?? '—' }}</strong><small>/ 100</small></article>
             <article><span>Open Ports</span><strong>{{ auditReport?.network.open_ports.length ?? 0 }}</strong><small>network exposure</small></article>
             <article><span>External Findings</span><strong>{{ auditReport?.findings.length ?? 0 }}</strong><small>black-box view</small></article>
-            <article><span>Attackable</span><strong class="danger">{{ auditReport?.findings.filter((item) => item.actionable).length ?? 0 }}</strong><small>controlled actions</small></article>
+            <article><span>{{ auditReport?.isLabTarget ? 'Lab Actions' : 'Web Services' }}</span><strong class="danger">{{ auditReport?.isLabTarget ? auditReport.findings.filter((item) => item.actionable).length : (auditReport?.webServices.length ?? 0) }}</strong><small>{{ auditReport?.isLabTarget ? 'controlled actions' : 'passive probes' }}</small></article>
             <article><span>Exposed Data</span><strong class="danger">{{ exposedCount() }}</strong><small>visible to attacker</small></article>
           </section>
 
@@ -74,11 +75,12 @@
             <header class="section-head">
               <div>
                 <span class="section-index">02 / RESULTS</span>
-                <h2>{{ auditReport.targetIp }}</h2>
-                <p>{{ auditReport.isLabTarget ? '黑箱偵察完成：攻擊者只從外部服務與 HTTP 回應判斷可利用漏洞。' : '私人遠端主機：僅執行外部網路與 HTTP 探測。' }}</p>
+                <h2>{{ auditReport.targetUrl }}</h2>
+                <p>{{ auditReport.isLabTarget ? 'Lab 模式：保留白名單攻擊展示與授權 UNIX Collector。' : 'Real Web 模式：只執行外部網路探索與被動 HTTP 安全檢查，不送出修改資料的請求。' }}</p>
               </div>
               <div class="port-chips">
                 <code v-for="port in auditReport.network.open_ports" :key="port.port">{{ port.port }}/{{ port.protocol }} · {{ port.service }}</code>
+                <code v-for="service in auditReport.webServices" :key="service.url">{{ service.status }} · {{ service.url }}</code>
               </div>
             </header>
 
@@ -163,7 +165,7 @@
           <section v-else class="analysis-empty">
             <span>READY</span>
             <h2>等待目標位址</h2>
-            <p>系統會從 Attacker 節點執行 Nmap 與 HTTP 探測；Lab Target 另會執行授權的 UNIX 唯讀稽核。</p>
+            <p>系統會驗證私人目標、探索服務，再對實際 HTTP/HTTPS URL 執行唯讀安全檢查；Lab Target 另保留教學攻防流程。</p>
           </section>
         </main>
 
@@ -196,7 +198,7 @@
       <div v-if="terminalOpen" class="terminal-stage">
         <div class="terminal-window">
           <header class="terminal-bar"><div class="terminal-dots"><span></span><span></span><span></span></div><strong>bash — {{ terminalTitle }}</strong><button @click="closeTerminal" :disabled="terminalRunning">×</button></header>
-          <div class="terminal-body"><div class="terminal-context"><span>AUTHORIZED LAB</span><code>attacker@unix-lab:~$</code></div><ol><li v-for="(line, index) in terminalLines" :key="index" :class="'terminal-' + line.type">{{ line.text }}<span v-if="index === terminalLines.length - 1 && terminalRunning" class="cursor"></span></li></ol></div>
+          <div class="terminal-body"><div class="terminal-context"><span>AUTHORIZED PRIVATE AUDIT</span><code>attacker@unix-lab:~$</code></div><ol><li v-for="(line, index) in terminalLines" :key="index" :class="'terminal-' + line.type">{{ line.text }}<span v-if="index === terminalLines.length - 1 && terminalRunning" class="cursor"></span></li></ol></div>
           <footer class="terminal-footer"><span>{{ terminalRunning ? '作業執行中，請稍候...' : '作業完成，可關閉終端查看結果。' }}</span><button @click="closeTerminal" :disabled="terminalRunning">{{ terminalRunning ? '執行中' : '查看結果' }}</button></footer>
         </div>
       </div>

@@ -213,14 +213,18 @@ h1 { font-family: Georgia, "Times New Roman", serif; font-size: 1.55rem; font-we
   padding: 22px;
   border-bottom: 1px solid var(--line);
 }
+.section-head > div:first-child { min-width: 0; }
+.section-head h2 { overflow-wrap: anywhere; }
 .port-chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
 .port-chips code {
+  max-width: 100%;
   padding: 6px 9px;
   border: 1px solid rgba(76,201,232,.4);
   border-radius: var(--radius);
   color: var(--cyan);
   background: var(--surface-3);
   font-size: .7rem;
+  overflow-wrap: anywhere;
 }
 
 .loot-board {
