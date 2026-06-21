@@ -130,7 +130,7 @@ def scan(target):
 
 def network_audit(target):
     _, target_ip = resolve_allowed_target(target)
-    command = ["nmap", "-sV", "-T4", "-p", "1-9000", "-oX", "-", target]
+    command = ["nmap", "-sV", "-T4", "-p", "1-9000,25565", "-oX", "-", target]
     result = subprocess.run(command, capture_output=True, text=True, timeout=45, check=False)
     open_ports = []
     if result.stdout:

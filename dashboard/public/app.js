@@ -70,7 +70,7 @@ createApp({
       try {
         await this.typeTerminalLine("Unix Cyber Lab integrated attack surface auditor", "system", 18);
         await this.typeTerminalLine("[network discovery] scanner does not know which ports are open", "system", 9);
-        await this.typeTerminalLine(`$ nmap -sV -p 1-9000 ${requestedTarget}`, "command", 18);
+        await this.typeTerminalLine(`$ nmap -sV -p 1-9000,25565 ${requestedTarget}`, "command", 18);
         await this.typeTerminalLine(`$ export TARGET=http://${requestedTarget}:8080`, "command", 10);
         await this.typeTerminalLine("$ for path in /debug /backup/config.bak /admin/export /files/permissions; do curl -s \"$TARGET$path\"; done", "command", 6);
         await this.typeTerminalLine("[active probe] mapping discovered responses to attackable locations", "system", 8);

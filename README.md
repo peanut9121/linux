@@ -94,7 +94,7 @@ cd /path/to/unix-cyber-lab
 Dashboard 的 `Linux Security Audit` 不使用預設漏洞路徑清單，而是執行真實的唯讀檢查：
 
 ```bash
-nmap -sV -p 1-9000 target
+nmap -sV -p 1-9000,25565 target
 uname -a
 id
 ps -eo pid,user,comm,args
