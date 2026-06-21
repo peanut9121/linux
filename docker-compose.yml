@@ -28,6 +28,14 @@ services:
       - lab_logs:/var/log/unix-cyber-lab:ro
     command: ["sleep", "infinity"]
 
+  web-demo:
+    build: ./web-demo
+    container_name: unix-lab-web-demo
+    networks:
+      - lab_net
+    ports:
+      - "8081:8080"
+
   dashboard:
     build: ./dashboard
     container_name: unix-lab-dashboard
@@ -42,6 +50,7 @@ services:
     depends_on:
       - target
       - attacker
+      - web-demo
 
 networks:
   lab_net:

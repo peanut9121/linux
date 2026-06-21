@@ -15,7 +15,8 @@ const nodeDefinitions = [
   { id: "attacker", name: "Attacker", fallbackIp: "172.28.0.10", role: "Controlled event simulator" },
   { id: "target", name: "Target", fallbackIp: "172.28.0.20", role: "Linux service and log source" },
   { id: "defender", name: "Defender", fallbackIp: "172.28.0.30", role: "Rule-based log analyzer" },
-  { id: "dashboard", name: "Dashboard", fallbackIp: "172.28.0.40", role: "Vue transparency layer" }
+  { id: "dashboard", name: "Dashboard", fallbackIp: "172.28.0.40", role: "Vue transparency layer" },
+  { id: "web-demo", name: "Web Demo", fallbackIp: "172.28.0.60", role: "Standalone Linux web service" }
 ];
 
 const remediationByLab = {
