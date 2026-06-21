@@ -65,23 +65,26 @@ createApp({
       this.terminalOpen = true;
       this.terminalRunning = true;
       this.terminalMode = "audit";
-      this.terminalTitle = `Integrated Attack & Defense Audit / ${requestedTarget}`;
+      this.terminalTitle = `Authorized Private Web Audit / ${requestedTarget}`;
       this.terminalLines = [];
       try {
-        await this.typeTerminalLine("Unix Cyber Lab integrated attack surface auditor", "system", 18);
-        await this.typeTerminalLine("[network discovery] scanner does not know which ports are open", "system", 9);
-        await this.typeTerminalLine(`$ nmap -sV -p 1-9000,25565 ${requestedTarget}`, "command", 18);
-        await this.typeTerminalLine(`$ export TARGET=http://${requestedTarget}:8080`, "command", 10);
-        await this.typeTerminalLine("$ for path in /debug /backup/config.bak /admin/export /files/permissions; do curl -s \"$TARGET$path\"; done", "command", 6);
-        await this.typeTerminalLine("[active probe] mapping discovered responses to attackable locations", "system", 8);
+        await this.typeTerminalLine("Unix Cyber Lab authorized private web auditor", "system", 18);
+        await this.typeTerminalLine(`$ resolve-target \"${requestedTarget}\"`, "command", 12);
+        await this.typeTerminalLine("[authorization] resolving and validating private addresses", "system", 9);
         const response = await fetch(`/api/audit/linux?target=${encodeURIComponent(requestedTarget)}`);
         const report = await response.json();
         if (!response.ok) throw new Error(report.error || "audit failed");
         this.auditReport = report;
+        await this.typeTerminalLine(`[target] ${report.targetUrl} -> ${report.targetIp}`, "success", 8);
+        await this.typeTerminalLine(`$ ${report.network.command}`, "command", 8);
+        for (const service of report.webServices || []) {
+          await this.typeTerminalLine(`[web] ${service.status} ${service.url}${service.title ? ` · ${service.title}` : ""}`, "success", 7);
+        }
         if (report.isLabTarget) {
+          await this.typeTerminalLine("[lab probe] running allow-listed teaching paths", "system", 9);
           await this.typeTerminalLine("[defender-side] authorized UNIX Collector results stored separately", "system", 9);
         } else {
-          await this.typeTerminalLine("[collector skipped] remote host has no authorized UNIX collector", "system", 9);
+          await this.typeTerminalLine("[real target] passive HTTP checks only; exploit actions disabled", "system", 9);
         }
         for (const port of report.network.open_ports) {
           await this.typeTerminalLine(`[open port] ${port.port}/${port.protocol} ${port.service} ${port.product}`.trim(), "warning", 8);
@@ -90,8 +93,10 @@ createApp({
           await this.typeTerminalLine(`[${finding.severity}] ${finding.title}`, finding.severity === "high" ? "error" : "warning", 8);
           await this.typeTerminalLine(`[evidence] ${finding.evidence}`, "output", 5);
         }
-        await this.typeTerminalLine(`[complete] Linux security score: ${report.score}/100`, "success", 12);
-        this.auditMessage = `黑箱分析完成：外部發現 ${report.findings.length} 個項目，其中 ${report.findings.filter((item) => item.actionable).length} 個可驗證攻擊。`;
+        await this.typeTerminalLine(`[complete] Security score: ${report.score}/100`, "success", 12);
+        this.auditMessage = report.isLabTarget
+          ? `Lab 分析完成：發現 ${report.findings.length} 個項目，其中 ${report.findings.filter((item) => item.actionable).length} 個可展示攻擊。`
+          : `私人網頁分析完成：識別 ${report.webServices.length} 個 Web 服務與 ${report.findings.length} 個安全項目。`;
         await this.refreshData();
       } catch (error) {
         await this.typeTerminalLine(`[error] ${error.message}`, "error", 14);
@@ -215,7 +220,13 @@ createApp({
           await this.sleep(260);
         }
         await this.typeTerminalLine(`[expected result] ${finding.recommendation}`, "success", 8);
-        await this.typeTerminalLine("[preview only] 保留教學漏洞，未永久修改 Target。", "system", 10);
+        await this.typeTerminalLine(
+          this.auditReport?.isLabTarget
+            ? "[preview only] 保留教學漏洞，未永久修改 Target。"
+            : "[preview only] 僅顯示修補建議，未對私人服務執行任何變更。",
+          "system",
+          10
+        );
         this.defenseResults[findingId] = { recommendation: finding.recommendation };
         this.operationMessage = `${findingId} 防禦修補動畫展示完成。`;
       } finally {
