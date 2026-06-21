@@ -79,16 +79,7 @@ createApp({
         if (!response.ok) throw new Error(report.error || "audit failed");
         this.auditReport = report;
         if (report.isLabTarget) {
-          await this.typeTerminalLine("[authorized system collector] executing read-only UNIX checks", "system", 9);
-          for (const command of [
-            "$ uname -a",
-            "$ id",
-            "$ ps -eo pid,user,comm,args",
-            "$ ss -lntup",
-            "$ find /lab /etc /opt /srv -xdev -type f -perm -0002"
-          ]) {
-            await this.typeTerminalLine(command, "command", 8);
-          }
+          await this.typeTerminalLine("[defender-side] authorized UNIX Collector results stored separately", "system", 9);
         } else {
           await this.typeTerminalLine("[collector skipped] remote host has no authorized UNIX collector", "system", 9);
         }
@@ -100,7 +91,7 @@ createApp({
           await this.typeTerminalLine(`[evidence] ${finding.evidence}`, "output", 5);
         }
         await this.typeTerminalLine(`[complete] Linux security score: ${report.score}/100`, "success", 12);
-        this.auditMessage = `已分析 ${report.targetIp}：發現 ${report.findings.length} 個項目，其中 ${report.findings.filter((item) => item.actionable).length} 個可展示攻擊。`;
+        this.auditMessage = `黑箱分析完成：外部發現 ${report.findings.length} 個項目，其中 ${report.findings.filter((item) => item.actionable).length} 個可驗證攻擊。`;
         await this.refreshData();
       } catch (error) {
         await this.typeTerminalLine(`[error] ${error.message}`, "error", 14);
@@ -139,6 +130,7 @@ createApp({
         ],
         "LAB-004": [
           "$ export TARGET=http://target:8080",
+          "$ curl -s \"$TARGET/files/permissions\"",
           "$ curl -s \"$TARGET/files/config\"",
           "$ curl -s \"$TARGET/files/config?mode=<alternate-mode>\""
         ]
@@ -171,6 +163,9 @@ createApp({
         if (!response.ok) throw new Error(result.error || "attack failed");
         this.attackResults[vulnerabilityId] = result;
         await this.typeTerminalLine(result.result, "success", 12);
+        for (const item of result.exposed || []) {
+          await this.typeTerminalLine(`[stolen] ${item.label}: ${item.value}`, "warning", 9);
+        }
         await this.typeTerminalLine(`[success] ${result.summary}`, "success", 14);
         await this.typeTerminalLine(`[impact] ${result.impact}`, "warning", 11);
         await this.typeTerminalLine(`[before] ${result.before}`, "output", 12);
@@ -193,6 +188,15 @@ createApp({
         "LAB-004": ["$ sudo chown root:target /lab/service.conf", "$ sudo chmod 640 /lab/service.conf"]
       };
       return scripts[finding.labId] || ["$ sudo ss -lntup", "$ sudo ufw default deny incoming"];
+    },
+    stolenItems(finding) {
+      const result = this.attackResults[finding.labId || finding.id];
+      if (result?.exposed?.length) return result.exposed;
+      return finding.exposed || [];
+    },
+    exposedCount() {
+      if (!this.auditReport) return 0;
+      return this.auditReport.findings.reduce((total, finding) => total + (finding.exposed?.length || 0), 0);
     },
     async runDefense(finding) {
       const findingId = finding.labId || finding.id;

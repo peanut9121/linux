@@ -47,7 +47,7 @@
             <div>
               <span class="section-index">01 / TARGET</span>
               <h2>選擇分析目標</h2>
-              <p>輸入 Docker 服務名稱或單一私人網路 IP。公開網際網路位址會被拒絕。</p>
+              <p>從外部黑箱攻擊者視角分析目標：只使用網路掃描與 HTTP 探測，不預先取得系統內部權限。</p>
             </div>
             <form class="target-form" @submit.prevent="runLinuxAudit">
               <label for="target-address">目標主機</label>
@@ -65,8 +65,9 @@
           <section class="signal-strip">
             <article><span>Security Score</span><strong :class="{ danger: auditReport?.score < 70 }">{{ auditReport?.score ?? '—' }}</strong><small>/ 100</small></article>
             <article><span>Open Ports</span><strong>{{ auditReport?.network.open_ports.length ?? 0 }}</strong><small>network exposure</small></article>
-            <article><span>Findings</span><strong>{{ auditReport?.findings.length ?? 0 }}</strong><small>observations</small></article>
+            <article><span>External Findings</span><strong>{{ auditReport?.findings.length ?? 0 }}</strong><small>black-box view</small></article>
             <article><span>Attackable</span><strong class="danger">{{ auditReport?.findings.filter((item) => item.actionable).length ?? 0 }}</strong><small>controlled actions</small></article>
+            <article><span>Exposed Data</span><strong class="danger">{{ exposedCount() }}</strong><small>visible to attacker</small></article>
           </section>
 
           <section v-if="auditReport" class="results-section">
@@ -74,12 +75,27 @@
               <div>
                 <span class="section-index">02 / RESULTS</span>
                 <h2>{{ auditReport.targetIp }}</h2>
-                <p>{{ auditReport.isLabTarget ? '已連接授權 UNIX Collector，可進行完整 Lab 攻防展示。' : '私人遠端主機：僅執行網路與 HTTP 探測。' }}</p>
+                <p>{{ auditReport.isLabTarget ? '黑箱偵察完成：攻擊者只從外部服務與 HTTP 回應判斷可利用漏洞。' : '私人遠端主機：僅執行外部網路與 HTTP 探測。' }}</p>
               </div>
               <div class="port-chips">
                 <code v-for="port in auditReport.network.open_ports" :key="port.port">{{ port.port }}/{{ port.protocol }} · {{ port.service }}</code>
               </div>
             </header>
+
+            <section class="loot-board" v-if="auditReport.findings.some((finding) => finding.exposed?.length)">
+              <div>
+                <span class="section-index">03 / ATTACKER VIEW</span>
+                <h2>黑客可取得資訊</h2>
+                <p>這些資料不是從 Collector 讀到的，而是外部探測或漏洞驗證後，目標服務自己回傳或暴露出來的內容。</p>
+              </div>
+              <div class="loot-grid">
+                <article v-for="finding in auditReport.findings.filter((item) => item.exposed?.length)" :key="'loot-' + finding.id">
+                  <header><strong>{{ finding.id }}</strong><span>{{ finding.attackerPhase || 'Exposure' }}</span></header>
+                  <p>{{ finding.attackerValue }}</p>
+                  <code v-for="item in stolenItems(finding)" :key="item.label">{{ item.label }}: {{ item.value }}</code>
+                </article>
+              </div>
+            </section>
 
             <div class="finding-list">
               <article v-for="finding in auditReport.findings" :key="finding.id" class="finding-row" :class="{ actionable: finding.actionable }">
@@ -91,6 +107,10 @@
                   <div class="finding-title"><h3>{{ finding.title }}</h3><code>{{ finding.source }}</code></div>
                   <p>{{ finding.reason }}</p>
                   <code class="evidence">{{ finding.evidence }}</code>
+                  <div v-if="finding.exposed?.length" class="exposed-list">
+                    <span>黑客可取得</span>
+                    <code v-for="item in stolenItems(finding)" :key="item.label">{{ item.label }} = {{ item.value }}</code>
+                  </div>
                   <details>
                     <summary>查看修補建議</summary>
                     <p>{{ finding.recommendation }}</p>
@@ -110,8 +130,11 @@
                 </div>
                 <div v-if="attackResults[finding.labId] || defenseResults[finding.labId || finding.id]" class="finding-outcome">
                   <div v-if="attackResults[finding.labId]">
-                    <strong>攻擊結果</strong>
+                    <strong>攻擊結果：資料已外洩</strong>
                     <p>{{ attackResults[finding.labId].summary }}</p>
+                    <div class="stolen-after-attack" v-if="attackResults[finding.labId].exposed?.length">
+                      <code v-for="item in attackResults[finding.labId].exposed" :key="item.label">{{ item.label }}: {{ item.value }}</code>
+                    </div>
                     <code>{{ attackResults[finding.labId].before }} → {{ attackResults[finding.labId].after }}</code>
                   </div>
                   <div v-if="defenseResults[finding.labId || finding.id]">
@@ -123,7 +146,14 @@
             </div>
 
             <details v-if="auditReport.isLabTarget" class="command-evidence">
-              <summary>Collector 實際執行的 UNIX 指令與輸出</summary>
+              <summary>防禦端授權 UNIX Collector 結果（非攻擊者初始能力）</summary>
+              <section v-if="auditReport.defenderFindings?.length" class="defender-audit-list">
+                <article v-for="finding in auditReport.defenderFindings" :key="finding.id">
+                  <strong>{{ finding.title }}</strong>
+                  <p>{{ finding.reason }}</p>
+                  <code>{{ finding.evidence }}</code>
+                </article>
+              </section>
               <article v-for="(result, name) in auditReport.system.commands" :key="name">
                 <strong>{{ name }}</strong><code>$ {{ result.command }}</code><pre>{{ result.stdout || '(no output)' }}</pre>
               </article>

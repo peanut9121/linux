@@ -25,6 +25,13 @@ const remediationByLab = {
   "LAB-004": "使用 chmod 640 與 chown 限制設定檔，只允許服務擁有者修改。"
 };
 
+const attackerPhaseByLab = {
+  "LAB-001": "Reconnaissance",
+  "LAB-002": "Credential Exposure",
+  "LAB-003": "Unauthorized Access",
+  "LAB-004": "Integrity Impact"
+};
+
 async function resolveNodes() {
   return Promise.all(nodeDefinitions.map(async (node) => {
     try {
@@ -213,9 +220,13 @@ app.get("/api/audit/linux", async (_request, response) => {
       location: `http://${network.target_ip}:8080${finding.path}`,
       path: finding.path,
       attack: finding.attack,
+      exposed: finding.exposed || [],
+      attackerValue: finding.attacker_value || "",
+      attackerPhase: attackerPhaseByLab[finding.id],
       actionable: isLabTarget
     }));
-    const findings = [...systemFindings, ...networkFindings, ...probedFindings];
+    const findings = [...networkFindings, ...probedFindings];
+    const defenderFindings = systemFindings;
     response.json({
       generatedAt: new Date().toISOString(),
       target: requestedTarget,
@@ -224,7 +235,8 @@ app.get("/api/audit/linux", async (_request, response) => {
       system,
       network,
       findings,
-      score: Math.max(0, 100 - findings.reduce((score, item) => score + (item.severity === "high" ? 20 : 8), 0))
+      defenderFindings,
+      score: Math.max(0, 100 - [...findings, ...defenderFindings].reduce((score, item) => score + (item.severity === "high" ? 20 : 8), 0))
     });
   } catch {
     response.status(503).json({ error: "linux audit services are unavailable" });

@@ -114,26 +114,63 @@ class Handler(BaseHTTPRequestHandler):
             write_event("vulnerability_access", source_ip, "id=LAB-001,path=/debug")
             if query.get("inspect") == ["full"]:
                 write_event("exploit_success", source_ip, "id=LAB-001,effect=debug_information_disclosed")
-            self.send_text(200, "debug_mode=true os=linux service=target flag=LAB_DEBUG_VISIBLE\n")
+            self.send_text(200, "\n".join([
+                "DEBUG MODE ENABLED",
+                "Application: unix-sentinel-api",
+                "Environment: production",
+                "OS: Alpine Linux 3.24",
+                "Runtime: Python 3.12",
+                "Server: BaseHTTPServer 0.6",
+                "Internal Path: /srv/unix-sentinel/app/server.py",
+                "API_BASE_URL=http://internal-api:9000",
+                "ADMIN_PANEL=/admin/export",
+                "DEBUG_TOKEN=LAB_DEBUG_VISIBLE",
+                "",
+            ]))
             return
 
         if parsed.path == "/backup/config.bak":
             write_event("vulnerability_access", source_ip, "id=LAB-002,path=/backup/config.bak")
             if query.get("download") == ["true"]:
                 write_event("exploit_success", source_ip, "id=LAB-002,effect=backup_file_downloaded")
-            self.send_text(200, "backup_password=training-only-secret database=lab-db\n")
+            self.send_text(200, "\n".join([
+                "# config.bak - copied from /srv/unix-sentinel/.env",
+                "APP_ENV=production",
+                "DB_HOST=10.0.12.8",
+                "DB_PORT=5432",
+                "DB_NAME=lab-db",
+                "DB_USER=lab_admin",
+                "backup_password=training-only-secret",
+                "JWT_SECRET=lab-jwt-demo-secret",
+                "",
+            ]))
             return
 
         if parsed.path == "/admin/export":
             write_event("vulnerability_access", source_ip, "id=LAB-003,path=/admin/export")
             if query.get("format") == ["json"]:
                 write_event("exploit_success", source_ip, "id=LAB-003,effect=admin_data_exported")
-            self.send_text(200, 'admin_export=true users=["alice","bob","lab-admin"]\n')
+            self.send_text(200, "\n".join([
+                "admin_export=true",
+                'users=["alice","bob","lab-admin"]',
+                'roles={"alice":"analyst","bob":"operator","lab-admin":"administrator"}',
+                "last_login_ip=172.28.0.4",
+                "export_scope=users,roles,last_login",
+                "",
+            ]))
             return
 
         if parsed.path == "/files/permissions":
             write_event("vulnerability_access", source_ip, "id=LAB-004,path=/files/permissions")
-            self.send_text(200, "file=/lab/service.conf mode=0666 owner=root\n")
+            self.send_text(200, "\n".join([
+                "file=/lab/service.conf",
+                "mode=0666",
+                "owner=root",
+                "group=root",
+                "current_value=service_mode=normal",
+                "risk=any local user can overwrite service configuration",
+                "",
+            ]))
             return
 
         if parsed.path == "/files/config":
